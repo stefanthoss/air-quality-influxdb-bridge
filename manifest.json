@@ -1,0 +1,43 @@
+{
+    "name": "Luftdaten Grafana Bridge",
+    "id": "luftdaten-bridge",
+    "packaging_format": 1,
+    "description": {
+        "en": "Accepts data from a luftdaten.info sensor and forwards it to Grafana."
+    },
+    "version": "1.0",
+    "url": "https://github.com/stefanthoss/luftdaten-influxdb-bridge",
+    "license": " BSD-2-Clause",
+    "maintainer": {
+        "name": "Stefan Thoss",
+        "url": "https://github.com/stefanthoss"
+    },
+    "requirements": {
+        "yunohost": ">= 2.4.0"
+    },
+    "multi_instance": false,
+    "services": [
+        "nginx"
+    ],
+    "arguments": {
+        "install": [
+            {
+                "name": "domain",
+                "type": "domain",
+                "ask": {
+                    "en": "Choose a domain name for luftdaten-bridge"
+                },
+                "example": "example.com"
+            },
+            {
+                "name": "path",
+                "type": "path",
+                "ask": {
+                    "en": "Choose a path for luftdaten-bridge"
+                },
+                "example": "/luftdaten-bridge",
+                "default": "/luftdaten-bridge"
+            }
+        ]
+    }
+}
