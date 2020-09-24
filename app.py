@@ -1,8 +1,12 @@
 #!/usr/bin/python3
 
+from distutils import util
 from flask import Flask, jsonify, request
 from flask_influxdb import InfluxDB
+from threema.gateway import Connection
+from threema.gateway.simple import TextMessage
 import aqi
+import asyncio
 
 
 AQI_CATEGORIES = {
@@ -14,11 +18,26 @@ AQI_CATEGORIES = {
     (300, 500): "Hazardous",
 }
 
+ALERT_MESSAGES = {
+    "Good": "\U0001F7E2 The air quality is good, go outside!",
+    "Moderate": "\U0001F7E1 The air quality is moderate.",
+    "Unhealthy for Sensitive Groups": "\U0001F7E0 The air quality is unhealthy for sensitive groups.",
+    "Unhealthy": "\U0001F534 The air quality is unhealthy.",
+    "Very Unhealthy": "\U0001F7E3 The air quality is very unhealthy.",
+    "Hazardous": "\U0001F7E4 The air quality is hazardous.",
+}
+
 app = Flask(__name__)
 app.config.from_pyfile("app.cfg")
 influx_db = InfluxDB(app=app)
 
-MEASUREMENT_NAME = "feinstaub"
+ALERT_THRESHOLD_MINUTES = 30
+
+
+def get_aqi_category(aqi_value):
+    for limits, category in AQI_CATEGORIES.items():
+        if aqi_value > limits[0] and aqi_value <= limits[1]:
+            return category
 
 
 def transform_data(data):
@@ -28,10 +47,38 @@ def transform_data(data):
     return data_points
 
 
-def get_aqi_category(aqi_value):
-    for limits, category in AQI_CATEGORIES.items():
-        if aqi_value > limits[0] and aqi_value <= limits[1]:
-            return category
+def trigger_alerts():
+    result = influx_db.query(
+        f"SELECT AQI_category FROM {app.config['INFLUXDB_MEASUREMENT_NAME']} WHERE time > now() - {ALERT_THRESHOLD_MINUTES}m;"
+    )
+    categories = [i["AQI_category"] for i in result.get_points(measurement=app.config["INFLUXDB_MEASUREMENT_NAME"])]
+    current_category = categories[0]
+
+    result = influx_db.query("SELECT last(alert) FROM notifications;")
+    notifications = list(result.get_points(measurement="notifications"))
+    if len(notifications) == 0:
+        last_category = "Good"
+    else:
+        last_category = notifications[0]["last"]
+
+    if len(set(categories)) == 1 and current_category != last_category:
+        influx_db.write_points([{"fields": {"alert": current_category}, "measurement": "notifications"}])
+        app.logger.info(f"New alert status: {current_category}")
+
+        if bool(util.strtobool(app.config["THREEMA_ALERTS_ENABLED"])):
+            asyncio.set_event_loop(asyncio.new_event_loop())
+            threema_connection = Connection(
+                identity=app.config["THREEMA_IDENTITY"],
+                secret=app.config["THREEMA_SECRET"],
+                verify_fingerprint=True,
+                blocking=True,
+            )
+            for recipient in app.config["THREEMA_RECIPIENTS"].split(","):
+                message = TextMessage(
+                    connection=threema_connection, to_id=recipient, text=ALERT_MESSAGES[current_category]
+                )
+                message.send()
+            threema_connection.close()
 
 
 @app.route("/", methods=["GET"])
@@ -58,7 +105,11 @@ def upload_measurement():
     data_points["AQI_category"] = get_aqi_category(aqi_value)
 
     app.logger.debug(f"Writing data: {data_points}")
-    influx_db.write_points([{"fields": data_points, "tags": {"node": node_tag}, "measurement": MEASUREMENT_NAME}])
+    influx_db.write_points(
+        [{"fields": data_points, "tags": {"node": node_tag}, "measurement": app.config["INFLUXDB_MEASUREMENT_NAME"]}]
+    )
+
+    trigger_alerts()
 
     return jsonify({"success": "true"})
 
